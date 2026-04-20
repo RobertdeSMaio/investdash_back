@@ -8,15 +8,14 @@ export async function OPTIONS() {
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  context: { params: Promise<{ id: string }> },
 ) {
   const auth = requireAuth(req);
   if (auth instanceof NextResponse) return auth;
   const { userId } = auth;
 
-  const { id } = params;
+  const { id } = await context.params;
 
-  // UUID basic validation to prevent injection
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ message: "ID inválido." }, { status: 400 });
   }
