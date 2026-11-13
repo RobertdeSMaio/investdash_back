@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAccessToken } from "./auth";
+import { corsHeaders } from "./cors";
 
 export function getAuthUser(req: NextRequest): string | null {
   try {
@@ -23,6 +24,13 @@ export function requireAuth(
   return { userId };
 }
 
+// x-forwarded-for pode vir como lista "cliente, proxy1, proxy2".
+export function clientIp(req: NextRequest): string {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) return fwd.split(",")[0].trim() || "unknown";
+  return req.headers.get("x-real-ip") || "unknown";
+}
+
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 export function rateLimit(
@@ -44,13 +52,6 @@ export function rateLimit(
   return true;
 }
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "https://investdash.vercel.app",
-  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "true",
-};
-
 export function preflight() {
   return new NextResponse(null, {
     status: 204,
@@ -58,9 +59,7 @@ export function preflight() {
   });
 }
 
-export function corsResponse(res: NextResponse) {
-  Object.entries(corsHeaders).forEach(([key, value]) => {
-    res.headers.set(key, value);
-  });
-  return res;
+// Código de erro do Postgres para violação de UNIQUE.
+export function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "23505";
 }

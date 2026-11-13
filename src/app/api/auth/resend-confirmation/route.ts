@@ -1,6 +1,6 @@
 import sql from "@/lib/db";
 import { sendConfirmationEmail } from "@/lib/mailer";
-import { preflight, rateLimit, requireAuth } from "@/lib/middleware";
+import { clientIp, preflight, rateLimit, requireAuth } from "@/lib/middleware";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 
@@ -13,8 +13,7 @@ export async function POST(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { userId } = auth;
 
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`resend:${userId}:${ip}`, 3, 60 * 60 * 1000)) {
+  if (!rateLimit(`resend:${userId}:${clientIp(req)}`, 3, 60 * 60 * 1000)) {
     return NextResponse.json(
       { message: "Muitas tentativas. Aguarde antes de solicitar novamente." },
       { status: 429 },
@@ -34,8 +33,8 @@ export async function POST(req: NextRequest) {
 
   // Invalidate previous tokens
   await sql`
-    UPDATE email_tokens SET used = TRUE
-    WHERE user_id = ${userId} AND type = 'confirm' AND used = FALSE
+    UPDATE email_tokens SET used_at = NOW()
+    WHERE user_id = ${userId} AND type = 'confirm' AND used_at IS NULL
   `;
 
   const token = uuidv4();
@@ -49,6 +48,10 @@ export async function POST(req: NextRequest) {
     await sendConfirmationEmail(user.email, token);
   } catch (e) {
     console.error("Email error:", e);
+    return NextResponse.json(
+      { message: "Não foi possível enviar o e-mail agora." },
+      { status: 502 },
+    );
   }
 
   return NextResponse.json({ message: "E-mail de confirmação reenviado!" });

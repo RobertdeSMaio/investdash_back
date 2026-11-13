@@ -3,7 +3,7 @@ import { preflight } from "@/lib/middleware";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-const schema = z.object({ refreshToken: z.string().min(1) });
+const schema = z.object({ refreshToken: z.string().min(1).max(4096) });
 
 export async function OPTIONS() {
   return preflight();
@@ -14,14 +14,14 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ message: "OK" }); // silent
+    return NextResponse.json({ message: "Sessão encerrada." }); // silent
   }
 
   const parsed = schema.safeParse(body);
   if (parsed.success) {
     await sql`
-      UPDATE refresh_tokens SET revoked = TRUE
-      WHERE token = ${parsed.data.refreshToken}
+      UPDATE refresh_tokens SET revoked_at = NOW()
+      WHERE token = ${parsed.data.refreshToken} AND revoked_at IS NULL
     `;
   }
 

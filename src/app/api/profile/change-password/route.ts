@@ -1,18 +1,14 @@
 import { comparePassword, hashPassword } from "@/lib/auth";
 import sql from "@/lib/db";
-import { preflight, rateLimit, requireAuth } from "@/lib/middleware";
+import { clientIp, preflight, rateLimit, requireAuth } from "@/lib/middleware";
+import { anyPassword, invalid, strongPassword } from "@/lib/validation";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 const schema = z
   .object({
-    currentPassword: z.string().min(1),
-    newPassword: z
-      .string()
-      .min(8)
-      .max(128)
-      .regex(/[A-Z]/, "Deve conter ao menos uma letra maiúscula")
-      .regex(/[0-9]/, "Deve conter ao menos um número"),
+    currentPassword: anyPassword,
+    newPassword: strongPassword,
     confirmNewPassword: z.string(),
   })
   .refine((d) => d.newPassword === d.confirmNewPassword, {
@@ -33,8 +29,7 @@ export async function PUT(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { userId } = auth;
 
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`changepw:${userId}:${ip}`, 5, 15 * 60 * 1000)) {
+  if (!rateLimit(`changepw:${userId}:${clientIp(req)}`, 5, 15 * 60 * 1000)) {
     return NextResponse.json(
       { message: "Muitas tentativas." },
       { status: 429 },
@@ -50,13 +45,7 @@ export async function PUT(req: NextRequest) {
 
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      {
-        message: "Dados inválidos.",
-        errors: parsed.error.flatten().fieldErrors,
-      },
-      { status: 422 },
-    );
+    return NextResponse.json(invalid(parsed.error), { status: 422 });
   }
 
   const [user] = await sql`SELECT password FROM users WHERE id = ${userId}`;
@@ -78,10 +67,16 @@ export async function PUT(req: NextRequest) {
   }
 
   const hashed = await hashPassword(parsed.data.newPassword);
-  await sql`UPDATE users SET password = ${hashed} WHERE id = ${userId}`;
+  await sql`
+    UPDATE users SET password = ${hashed}, updated_at = NOW()
+    WHERE id = ${userId}
+  `;
 
-  // Revoke all refresh tokens except current session would require passing token; revoke all for safety
-  await sql`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ${userId}`;
+  // Revoga todas as sessões; a atual expira junto com o access token (15 min).
+  await sql`
+    UPDATE refresh_tokens SET revoked_at = NOW()
+    WHERE user_id = ${userId} AND revoked_at IS NULL
+  `;
 
   return NextResponse.json({
     message: "Senha alterada com sucesso! Faça login novamente.",

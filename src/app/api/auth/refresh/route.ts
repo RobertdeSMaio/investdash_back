@@ -2,6 +2,7 @@ import {
   generateAccessToken,
   generateRefreshToken,
   getAccessExpiry,
+  getRefreshExpiry,
   verifyRefreshToken,
 } from "@/lib/auth";
 import sql from "@/lib/db";
@@ -9,12 +10,14 @@ import { preflight } from "@/lib/middleware";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-const schema = z.object({ refreshToken: z.string().min(1) });
+const schema = z.object({ refreshToken: z.string().min(1).max(4096) });
 
 export async function OPTIONS() {
   return preflight();
 }
 
+// O front guarda o access token só em memória: toda recarga de página passa
+// por aqui para obter um novo par de tokens.
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
@@ -40,34 +43,34 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Validate token in DB (rotation + revocation check)
+  // Rotação atômica: só uma requisição consegue revogar (e usar) o token.
   const [row] = await sql`
-    SELECT id, user_id FROM refresh_tokens
+    UPDATE refresh_tokens SET revoked_at = NOW()
     WHERE token = ${refreshToken}
       AND user_id = ${payload.sub}
-      AND revoked = FALSE
+      AND revoked_at IS NULL
       AND expires_at > NOW()
+    RETURNING id
   `;
 
   if (!row) {
-    // Potential token reuse – revoke all tokens for this user (breach detection)
-    await sql`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = ${payload.sub}`;
+    // Possível reuso de token – revoga todas as sessões do usuário.
+    await sql`
+      UPDATE refresh_tokens SET revoked_at = NOW()
+      WHERE user_id = ${payload.sub} AND revoked_at IS NULL
+    `;
     return NextResponse.json(
       { message: "Token inválido ou reutilizado." },
       { status: 401 },
     );
   }
 
-  // Rotate: revoke old, issue new
-  await sql`UPDATE refresh_tokens SET revoked = TRUE WHERE id = ${row.id}`;
-
   const newAccessToken = generateAccessToken(payload.sub);
   const newRefreshToken = generateRefreshToken(payload.sub);
-  const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   await sql`
     INSERT INTO refresh_tokens (user_id, token, expires_at)
-    VALUES (${payload.sub}, ${newRefreshToken}, ${newExpiry.toISOString()})
+    VALUES (${payload.sub}, ${newRefreshToken}, ${getRefreshExpiry()})
   `;
 
   return NextResponse.json({

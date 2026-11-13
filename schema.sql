@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS simulations (
   created_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_email_tokens_user   ON email_tokens (user_id, type) WHERE used_at IS NULL;
+
+-- Bancos já existentes: rode também os arquivos em migrations/ (em ordem).
+
 -- Migração: caso já tenha a tabela investments antiga
 -- ALTER TABLE investments RENAME TO simulations_old;
 -- Ou para adicionar colunas novas em simulations existente:

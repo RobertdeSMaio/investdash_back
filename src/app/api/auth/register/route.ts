@@ -1,22 +1,22 @@
 import { hashPassword } from "@/lib/auth";
 import sql from "@/lib/db";
 import { sendConfirmationEmail } from "@/lib/mailer";
-import { preflight, rateLimit } from "@/lib/middleware";
+import {
+  clientIp,
+  isUniqueViolation,
+  preflight,
+  rateLimit,
+} from "@/lib/middleware";
+import { email, invalid, personName, strongPassword } from "@/lib/validation";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 
 const schema = z
   .object({
-    name: z.string().min(2).max(100),
-    email: z.string().email(),
-    password: z
-      .string()
-      .min(8)
-      .max(128)
-      .regex(/[A-Z]/, "Deve conter ao menos uma letra maiúscula")
-      .regex(/[0-9]/, "Deve conter ao menos um número")
-      .regex(/[^A-Za-z0-9]/, "Deve conter ao menos um caractere especial"),
+    name: personName,
+    email,
+    password: strongPassword,
     confirmPassword: z.string(),
   })
   .refine((d) => d.password === d.confirmPassword, {
@@ -24,13 +24,14 @@ const schema = z
     path: ["confirmPassword"],
   });
 
+const DUPLICATE = { message: "Este e-mail já está cadastrado." };
+
 export async function OPTIONS() {
   return preflight();
 }
 
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`register:${ip}`, 10, 60 * 60 * 1000)) {
+  if (!rateLimit(`register:${clientIp(req)}`, 10, 60 * 60 * 1000)) {
     return NextResponse.json(
       { message: "Muitas tentativas. Tente novamente mais tarde." },
       { status: 429 },
@@ -46,42 +47,41 @@ export async function POST(req: NextRequest) {
 
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      {
-        message: "Dados inválidos.",
-        errors: parsed.error.flatten().fieldErrors,
-      },
-      { status: 422 },
-    );
+    return NextResponse.json(invalid(parsed.error), { status: 422 });
   }
 
-  const { name, email, password } = parsed.data;
+  const { name, email: address, password } = parsed.data;
 
-  const [existing] = await sql`SELECT id FROM users WHERE email = ${email}`;
+  const [existing] = await sql`SELECT id FROM users WHERE email = ${address}`;
   if (existing) {
-    return NextResponse.json(
-      { message: "Este e-mail já está cadastrado." },
-      { status: 409 },
-    );
+    return NextResponse.json(DUPLICATE, { status: 409 });
   }
 
   const hashed = await hashPassword(password);
 
-  const [user] = await sql`
-    INSERT INTO users (name, email, password)
-    VALUES (${name}, ${email}, ${hashed})
-    RETURNING id, email
-  `;
+  let user: Record<string, unknown>;
+  try {
+    [user] = await sql`
+      INSERT INTO users (name, email, password)
+      VALUES (${name}, ${address}, ${hashed})
+      RETURNING id, email
+    `;
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return NextResponse.json(DUPLICATE, { status: 409 });
+    }
+    throw err;
+  }
 
   const token = uuidv4();
   const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
   await sql`
     INSERT INTO email_tokens (user_id, token, type, expires_at)
-    VALUES (${user.id}, ${token}, 'confirm', ${expires.toISOString()})
+    VALUES (${user.id as string}, ${token}, 'confirm', ${expires.toISOString()})
   `;
 
   try {
-    await sendConfirmationEmail(email, token);
+    await sendConfirmationEmail(address, token);
   } catch (e) {
     console.error("Email error:", e);
   }

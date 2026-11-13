@@ -1,11 +1,10 @@
 import sql from "@/lib/db";
 import { preflight, requireAuth } from "@/lib/middleware";
 import { NextRequest, NextResponse } from "next/server";
+import { invalid, personName } from "@/lib/validation";
 import { z } from "zod";
 
-const updateSchema = z.object({
-  name: z.string().min(2).max(100),
-});
+const updateSchema = z.object({ name: personName });
 
 export async function OPTIONS() {
   return preflight();
@@ -49,20 +48,19 @@ export async function PUT(req: NextRequest) {
 
   const parsed = updateSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json(
-      {
-        message: "Dados inválidos.",
-        errors: parsed.error.flatten().fieldErrors,
-      },
-      { status: 422 },
-    );
+    return NextResponse.json(invalid(parsed.error), { status: 422 });
   }
 
   const [user] = await sql`
-    UPDATE users SET name = ${parsed.data.name}
+    UPDATE users SET name = ${parsed.data.name}, updated_at = NOW()
     WHERE id = ${userId}
     RETURNING id, name, email, email_confirmed, created_at
   `;
+  if (!user)
+    return NextResponse.json(
+      { message: "Usuário não encontrado." },
+      { status: 404 },
+    );
 
   return NextResponse.json({
     id: user.id,
