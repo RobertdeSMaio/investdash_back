@@ -2,4 +2,12 @@ node_modules
 .next
 out
 build
+
+# Variáveis de ambiente — nunca versionar (exceto o modelo)
 .env
+.env.*
+!.env.example
+
+.vercel
+*.tsbuildinfo
+*.log

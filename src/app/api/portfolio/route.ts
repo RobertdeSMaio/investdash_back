@@ -1,30 +1,14 @@
 import sql from "@/lib/db";
-import { preflight, rateLimit, requireAuth } from "@/lib/middleware";
+import {
+  clientIp,
+  isUniqueViolation,
+  preflight,
+  rateLimit,
+  requireAuth,
+} from "@/lib/middleware";
+import { DUPLICATE_TICKER_MESSAGE, mapAsset } from "@/lib/portfolio";
+import { assetSchema, invalid } from "@/lib/validation";
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-
-const assetSchema = z.object({
-  ticker: z.string().min(1).max(20).transform((v) => v.toUpperCase()),
-  name: z.string().min(1).max(150),
-  type: z.enum(["acao", "fii", "etf", "stock", "renda_fixa"]),
-  quantity: z.number().positive(),
-  avgPrice: z.number().positive(),
-  contributions: z.number().nonnegative().default(0),
-});
-
-function mapRow(r: Record<string, unknown>) {
-  return {
-    id: r.id,
-    ticker: r.ticker,
-    name: r.name,
-    type: r.type,
-    quantity: parseFloat(r.quantity as string),
-    avgPrice: parseFloat(r.avg_price as string),
-    contributions: parseFloat((r.contributions as string) ?? "0"),
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
 
 export async function OPTIONS() { return preflight(); }
 
@@ -39,7 +23,7 @@ export async function GET(req: NextRequest) {
     WHERE user_id = ${userId}
     ORDER BY type, ticker
   `;
-  return NextResponse.json(rows.map(mapRow));
+  return NextResponse.json(rows.map(mapAsset));
 }
 
 export async function POST(req: NextRequest) {
@@ -47,8 +31,7 @@ export async function POST(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { userId } = auth;
 
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`portfolio:${userId}:${ip}`, 200, 3600000)) {
+  if (!rateLimit(`portfolio:${userId}:${clientIp(req)}`, 200, 3600000)) {
     return NextResponse.json({ message: "Muitas operações. Tente mais tarde." }, { status: 429 });
   }
 
@@ -59,20 +42,22 @@ export async function POST(req: NextRequest) {
 
   const parsed = assetSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ message: "Dados inválidos.", errors: parsed.error.flatten().fieldErrors }, { status: 422 });
+    return NextResponse.json(invalid(parsed.error), { status: 422 });
   }
 
   const { ticker, name, type, quantity, avgPrice, contributions } = parsed.data;
 
-  const [existing] = await sql`SELECT id FROM portfolio WHERE user_id = ${userId} AND ticker = ${ticker}`;
-  if (existing) {
-    return NextResponse.json({ message: "Ativo já existe na carteira. Use edição para atualizar." }, { status: 409 });
+  try {
+    const [row] = await sql`
+      INSERT INTO portfolio (user_id, ticker, name, type, quantity, avg_price, contributions)
+      VALUES (${userId}, ${ticker}, ${name}, ${type}, ${quantity}, ${avgPrice}, ${contributions})
+      RETURNING id, ticker, name, type, quantity, avg_price, contributions, created_at, updated_at
+    `;
+    return NextResponse.json(mapAsset(row), { status: 201 });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return NextResponse.json({ message: DUPLICATE_TICKER_MESSAGE }, { status: 409 });
+    }
+    throw err;
   }
-
-  const [row] = await sql`
-    INSERT INTO portfolio (user_id, ticker, name, type, quantity, avg_price, contributions)
-    VALUES (${userId}, ${ticker}, ${name}, ${type}, ${quantity}, ${avgPrice}, ${contributions})
-    RETURNING id, ticker, name, type, quantity, avg_price, contributions, created_at, updated_at
-  `;
-  return NextResponse.json(mapRow(row), { status: 201 });
 }

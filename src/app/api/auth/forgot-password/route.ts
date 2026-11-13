@@ -1,19 +1,19 @@
 import sql from "@/lib/db";
 import { sendPasswordResetEmail } from "@/lib/mailer";
-import { preflight, rateLimit } from "@/lib/middleware";
+import { clientIp, preflight, rateLimit } from "@/lib/middleware";
+import { email } from "@/lib/validation";
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 
-const schema = z.object({ email: z.string().email() });
+const schema = z.object({ email });
 
 export async function OPTIONS() {
   return preflight();
 }
 
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`forgot:${ip}`, 5, 15 * 60 * 1000)) {
+  if (!rateLimit(`forgot:${clientIp(req)}`, 5, 15 * 60 * 1000)) {
     return NextResponse.json(
       { message: "Muitas tentativas. Tente novamente em breve." },
       { status: 429 },
@@ -36,14 +36,14 @@ export async function POST(req: NextRequest) {
 
   if (!parsed.success) return NextResponse.json(GENERIC);
 
-  const { email } = parsed.data;
-  const [user] = await sql`SELECT id FROM users WHERE email = ${email}`;
+  const { email: address } = parsed.data;
+  const [user] = await sql`SELECT id FROM users WHERE email = ${address}`;
   if (!user) return NextResponse.json(GENERIC);
 
   // Invalidate previous reset tokens
   await sql`
-    UPDATE email_tokens SET used = TRUE
-    WHERE user_id = ${user.id} AND type = 'reset' AND used = FALSE
+    UPDATE email_tokens SET used_at = NOW()
+    WHERE user_id = ${user.id} AND type = 'reset' AND used_at IS NULL
   `;
 
   const token = uuidv4();
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   `;
 
   try {
-    await sendPasswordResetEmail(email, token);
+    await sendPasswordResetEmail(address, token);
   } catch (e) {
     console.error("Email error:", e);
   }

@@ -1,28 +1,14 @@
 import sql from "@/lib/db";
-import { preflight, requireAuth } from "@/lib/middleware";
+import { isUniqueViolation, preflight, requireAuth } from "@/lib/middleware";
+import { DUPLICATE_TICKER_MESSAGE, mapAsset } from "@/lib/portfolio";
+import { assetSchema, invalid } from "@/lib/validation";
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 
-const updateSchema = z.object({
-  name: z.string().min(1).max(150).optional(),
-  quantity: z.number().positive().optional(),
-  avgPrice: z.number().positive().optional(),
-  contributions: z.number().nonnegative().optional(),
+// O modal de edição do front envia o ativo completo (inclusive ticker e tipo),
+// mas todos os campos continuam opcionais para atualizações parciais.
+const updateSchema = assetSchema.partial().extend({
+  contributions: assetSchema.shape.contributions.removeDefault().optional(),
 });
-
-function mapRow(r: Record<string, unknown>) {
-  return {
-    id: r.id,
-    ticker: r.ticker,
-    name: r.name,
-    type: r.type,
-    quantity: parseFloat(r.quantity as string),
-    avgPrice: parseFloat(r.avg_price as string),
-    contributions: parseFloat((r.contributions as string) ?? "0"),
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
 
 const validId = (id: string) => /^[0-9a-f-]{36}$/i.test(id);
 
@@ -42,24 +28,33 @@ export async function PUT(req: NextRequest, context: { params: Promise<{ id: str
 
   const parsed = updateSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ message: "Dados inválidos.", errors: parsed.error.flatten().fieldErrors }, { status: 422 });
+    return NextResponse.json(invalid(parsed.error), { status: 422 });
   }
 
-  const { quantity, avgPrice, contributions, name } = parsed.data;
+  const { ticker, name, type, quantity, avgPrice, contributions } = parsed.data;
 
-  const [row] = await sql`
-    UPDATE portfolio SET
-      quantity     = COALESCE(${quantity ?? null}, quantity),
-      avg_price    = COALESCE(${avgPrice ?? null}, avg_price),
-      contributions= COALESCE(${contributions ?? null}, contributions),
-      name         = COALESCE(${name ?? null}, name),
-      updated_at   = NOW()
-    WHERE id = ${id} AND user_id = ${userId}
-    RETURNING id, ticker, name, type, quantity, avg_price, contributions, created_at, updated_at
-  `;
+  try {
+    const [row] = await sql`
+      UPDATE portfolio SET
+        ticker        = COALESCE(${ticker ?? null}, ticker),
+        name          = COALESCE(${name ?? null}, name),
+        type          = COALESCE(${type ?? null}, type),
+        quantity      = COALESCE(${quantity ?? null}, quantity),
+        avg_price     = COALESCE(${avgPrice ?? null}, avg_price),
+        contributions = COALESCE(${contributions ?? null}, contributions),
+        updated_at    = NOW()
+      WHERE id = ${id} AND user_id = ${userId}
+      RETURNING id, ticker, name, type, quantity, avg_price, contributions, created_at, updated_at
+    `;
 
-  if (!row) return NextResponse.json({ message: "Ativo não encontrado." }, { status: 404 });
-  return NextResponse.json(mapRow(row));
+    if (!row) return NextResponse.json({ message: "Ativo não encontrado." }, { status: 404 });
+    return NextResponse.json(mapAsset(row));
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return NextResponse.json({ message: DUPLICATE_TICKER_MESSAGE }, { status: 409 });
+    }
+    throw err;
+  }
 }
 
 export async function DELETE(req: NextRequest, context: { params: Promise<{ id: string }> }) {

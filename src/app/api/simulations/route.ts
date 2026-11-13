@@ -1,5 +1,5 @@
 import sql from "@/lib/db";
-import { preflight, rateLimit, requireAuth } from "@/lib/middleware";
+import { clientIp, preflight, rateLimit, requireAuth } from "@/lib/middleware";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -85,8 +85,7 @@ export async function POST(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { userId } = auth;
 
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  if (!rateLimit(`sim:${userId}:${ip}`, 100, 3600000)) {
+  if (!rateLimit(`sim:${userId}:${clientIp(req)}`, 100, 3600000)) {
     return NextResponse.json({ message: "Muitas operações. Tente mais tarde." }, { status: 429 });
   }
 
